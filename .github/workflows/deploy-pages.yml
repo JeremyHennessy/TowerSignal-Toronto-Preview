@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
-          ref: agent/toronto-market-20260828
+          ref: 371f15074afd0f1f0c9ca5b0c9bbbbbd39a4909d
           path: app
 
       - name: Set up Node.js
