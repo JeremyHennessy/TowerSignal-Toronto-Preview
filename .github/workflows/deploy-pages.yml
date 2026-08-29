@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
-          ref: 371f15074afd0f1f0c9ca5b0c9bbbbbd39a4909d
+          ref: 5af237ac1c37807151267b7db54d1a85dd9fcbf7
           path: app
 
       - name: Set up Node.js
