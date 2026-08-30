@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
-          ref: 5af237ac1c37807151267b7db54d1a85dd9fcbf7
+          ref: 464ffb7bae7c7904823a7e0071baa118582265f0
           path: app
 
       - name: Set up Node.js
@@ -35,6 +35,10 @@ jobs:
       - name: Install dependencies
         working-directory: app
         run: npm install --no-audit --no-fund
+
+      - name: Build normalized Toronto app payload
+        working-directory: app
+        run: python scripts/build_toronto_app_data.py
 
       - name: Verify Toronto frontend
         working-directory: app
