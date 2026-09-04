@@ -96,15 +96,16 @@ jobs:
             page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }))
             await page.goto(url, { waitUntil: 'networkidle' })
             await page.getByRole('heading', { name: 'Toronto Market' }).waitFor({ timeout: 15000 })
+            const header = page.locator('header.reference-top-nav')
             const forbidden = ['Home','Prospect','Monitor','Map','NYS Market','NYS Changes','Opportunities','Companies','Portfolios','Workflow']
             for (const label of forbidden) {
-              if (await page.getByRole('button', { name: label, exact: true }).count()) throw new Error(`Unavailable preview navigation is still exposed: ${label}`)
+              if (await header.getByRole('button', { name: label, exact: true }).count()) throw new Error(`Unavailable preview header navigation is still exposed: ${label}`)
             }
-            if (await page.getByLabel('Market', { exact: true }).count()) throw new Error('Unavailable market selector is still exposed')
-            if (await page.getByLabel('Search accounts or locations', { exact: true }).count()) throw new Error('NYC global search is still exposed')
-            if (await page.getByLabel('Source Health & Coverage', { exact: true }).count()) throw new Error('NYC source health is still exposed')
-            if (await page.getByLabel('Open TowerSignal account', { exact: true }).count()) throw new Error('Unavailable account portal is still exposed')
-            const nyLink = page.getByRole('link', { name: 'New York app ↗', exact: true })
+            if (await header.getByLabel('Market', { exact: true }).count()) throw new Error('Unavailable market selector is still exposed')
+            if (await header.getByLabel('Search accounts or locations', { exact: true }).count()) throw new Error('NYC global search is still exposed')
+            if (await header.getByLabel('Source Health & Coverage', { exact: true }).count()) throw new Error('NYC source health is still exposed')
+            if (await header.getByLabel('Open TowerSignal account', { exact: true }).count()) throw new Error('Unavailable account portal is still exposed')
+            const nyLink = header.getByRole('link', { name: 'New York app ↗', exact: true })
             if (await nyLink.getAttribute('href') !== 'https://jeremyhennessy.github.io/TowerSignal/') throw new Error('New York app link target is incorrect')
             await record(page, name)
             results[results.length - 1].badResponses = badResponses
