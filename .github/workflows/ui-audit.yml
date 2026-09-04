@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
-          ref: 01b70d072088aac88aeff209e7cbd5214e11b951
+          ref: 1f54b265e279dd4c1240033768282d7cf7f14e72
           path: app
 
       - name: Set up Node.js 22
@@ -86,6 +86,7 @@ jobs:
               text: (await page.locator('body').innerText()).slice(0, 12000),
               links: await page.locator('a').evaluateAll(els => els.map(e => ({ text: e.textContent?.trim() || '', href: e.href, target: e.target }))),
               buttons: await page.locator('button').evaluateAll(els => els.map(e => e.textContent?.trim() || '').filter(Boolean)),
+              dimensions: await page.evaluate(() => ({ viewportWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth })),
             })
           }
           async function openAndRecord(name, viewport, url) {
@@ -105,7 +106,7 @@ jobs:
             if (await header.getByLabel('Search accounts or locations', { exact: true }).count()) throw new Error('NYC global search is still exposed')
             if (await header.getByLabel('Source Health & Coverage', { exact: true }).count()) throw new Error('NYC source health is still exposed')
             if (await header.getByLabel('Open TowerSignal account', { exact: true }).count()) throw new Error('Unavailable account portal is still exposed')
-            const nyLink = header.getByRole('link', { name: 'New York app ↗', exact: true })
+            const nyLink = header.getByRole('link', { name: 'Open New York app', exact: true })
             if (await nyLink.getAttribute('href') !== 'https://jeremyhennessy.github.io/TowerSignal/') throw new Error('New York app link target is incorrect')
             await record(page, name)
             results[results.length - 1].badResponses = badResponses
