@@ -1,4 +1,4 @@
-name: Toronto Preview Live UI Audit
+name: Toronto Preview Live Parity Audit
 
 on:
   push:
@@ -14,13 +14,13 @@ permissions:
 jobs:
   audit:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 55
     steps:
-      - name: Checkout test dependencies
+      - name: Checkout exact parity test dependencies
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
-          ref: 2eea1e2d5cbf0d9cf24d2325eb3a4222806ba6ea
+          ref: 19b5bfb094b9e15bab6900b409dd5e8c4078384d
           path: app
 
       - name: Set up Node.js 22
@@ -41,7 +41,7 @@ jobs:
           curl -L --fail --silent --show-error --max-time 30 -o /dev/null https://jeremyhennessy.github.io/TowerSignal-Toronto-Preview/
           curl -L --fail --silent --show-error --max-time 30 -o /dev/null https://jeremyhennessy.github.io/TowerSignal/
 
-      - name: Capture live screenshots and route evidence
+      - name: Wait for exact parity deployment and capture all live workspaces
         working-directory: app
         run: |
           cat > live-audit.mjs <<'EOF'
@@ -51,24 +51,49 @@ jobs:
           fs.mkdirSync(out, { recursive: true })
           const browser = await chromium.launch()
           const results = []
-          const cacheBust = Date.now()
-          const base = `https://jeremyhennessy.github.io/TowerSignal-Toronto-Preview/?ui_audit=${cacheBust}`
+          const root = 'https://jeremyhennessy.github.io/TowerSignal-Toronto-Preview/'
+
+          async function waitForParityRelease() {
+            const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+            for (let attempt = 1; attempt <= 100; attempt++) {
+              try {
+                await page.goto(`${root}?release_probe=${Date.now()}#/toronto`, { waitUntil: 'domcontentloaded', timeout: 30000 })
+                await page.locator('.toronto-parity-tabs').getByRole('button', { name: 'Benchmarking', exact: true }).waitFor({ timeout: 5000 })
+                const response = await page.request.get(`${root}data/toronto-ewrb-market.json?release_probe=${Date.now()}`)
+                if (response.ok()) {
+                  const payload = await response.json()
+                  if (payload.scope === 'TORONTO_AGGREGATE_ONLY' && payload.toronto_reporting_rows === 11595) {
+                    await page.close()
+                    return
+                  }
+                }
+              } catch {}
+              await page.waitForTimeout(20000)
+            }
+            await page.close()
+            throw new Error('Verified Toronto parity release did not become live during the audit window')
+          }
 
           async function record(page, name, badResponses, failedRequests) {
-            await page.waitForTimeout(700)
+            await page.waitForTimeout(600)
             await page.screenshot({ path: `${out}/${name}.png`, fullPage: true })
             const dimensions = await page.evaluate(() => ({ viewportWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth }))
-            results.push({
+            const body = (await page.locator('body').innerText()).slice(0, 10000)
+            const result = {
               name,
               url: page.url(),
-              text: (await page.locator('body').innerText()).slice(0, 12000),
+              text: body,
               links: await page.locator('a').evaluateAll(els => els.map(e => ({ text: e.textContent?.trim() || '', href: e.href, target: e.target }))),
               buttons: await page.locator('button').evaluateAll(els => els.map(e => e.textContent?.trim() || '').filter(Boolean)),
               dimensions,
               badResponses,
               failedRequests,
-            })
+            }
+            results.push(result)
             if (dimensions.scrollWidth > dimensions.viewportWidth) throw new Error(`${name} horizontally overflows: ${dimensions.scrollWidth}px content in ${dimensions.viewportWidth}px viewport`)
+            if (/Intelligence workspace unavailable|dataset request failed|Failed to fetch/i.test(body)) throw new Error(`${name} rendered an unavailable/fetch failure state`)
+            if (badResponses.length) throw new Error(`${name} produced HTTP errors: ${JSON.stringify(badResponses)}`)
+            if (failedRequests.length) throw new Error(`${name} produced failed requests: ${JSON.stringify(failedRequests)}`)
           }
 
           async function assertTorontoHeader(page) {
@@ -76,15 +101,13 @@ jobs:
             const header = page.locator('header.reference-top-nav')
             const forbidden = ['Home','Prospect','Monitor','Map','NYS Market','NYS Changes','Opportunities','Companies','Portfolios','Workflow']
             for (const label of forbidden) {
-              if (await header.getByRole('button', { name: label, exact: true }).count()) throw new Error(`Unavailable preview header navigation is still exposed: ${label}`)
+              if (await header.getByRole('button', { name: label, exact: true }).count()) throw new Error(`Unavailable preview header navigation is exposed: ${label}`)
             }
-            if (await header.getByLabel('Market', { exact: true }).count()) throw new Error('Unavailable market selector is still exposed')
-            if (await header.getByLabel('Search accounts or locations', { exact: true }).count()) throw new Error('NYC global search is still exposed')
-            if (await header.getByLabel('Source Health & Coverage', { exact: true }).count()) throw new Error('NYC source health is still exposed')
-            if (await header.getByLabel('Open TowerSignal account', { exact: true }).count()) throw new Error('Unavailable account portal is still exposed')
+            if (await header.getByLabel('Market', { exact: true }).count()) throw new Error('Unavailable NY market selector is exposed')
+            if (await header.getByLabel('Search accounts or locations', { exact: true }).count()) throw new Error('NY global search is exposed')
+            if (await header.getByLabel('Open TowerSignal account', { exact: true }).count()) throw new Error('Unavailable account portal is exposed')
             const nyLink = header.getByRole('link', { name: 'Open New York app', exact: true })
             if (await nyLink.getAttribute('href') !== 'https://jeremyhennessy.github.io/TowerSignal/') throw new Error('New York app link target is incorrect')
-            return nyLink
           }
 
           async function openToronto(name, viewport, hash = '#/toronto', interaction = null) {
@@ -93,23 +116,39 @@ jobs:
             const failedRequests = []
             page.on('response', response => { if (response.status() >= 400) badResponses.push({ url: response.url(), status: response.status() }) })
             page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }))
-            const response = await page.goto(`${base}${hash}`, { waitUntil: 'networkidle', timeout: 45000 })
+            const response = await page.goto(`${root}?ui_audit=${Date.now()}${hash}`, { waitUntil: 'networkidle', timeout: 45000 })
             if (!response || response.status() >= 400) throw new Error(`${name} main document did not load successfully`)
             await assertTorontoHeader(page)
             if (interaction) await interaction(page)
             await record(page, name, badResponses, failedRequests)
-            const current = results[results.length - 1]
-            if (current.badResponses.length) throw new Error(`${name} produced HTTP errors: ${JSON.stringify(current.badResponses)}`)
-            if (current.failedRequests.length) throw new Error(`${name} produced failed requests: ${JSON.stringify(current.failedRequests)}`)
             await page.close()
           }
 
-          await openToronto('live-toronto-desktop', { width: 1440, height: 1000 })
-          await openToronto('live-toronto-iphone', { width: 390, height: 844 })
+          async function openWorkspace(name, label, heading, viewport = { width: 1440, height: 1000 }) {
+            await openToronto(name, viewport, '#/toronto', async page => {
+              const tabs = page.locator('.toronto-parity-tabs')
+              await tabs.getByRole('button', { name: new RegExp(`^${label}`) }).click()
+              await page.getByRole('heading', { name: heading }).waitFor({ timeout: 30000 })
+            })
+          }
+
+          await waitForParityRelease()
+          await openToronto('live-toronto-market-desktop', { width: 1440, height: 1000 })
+          await openToronto('live-toronto-market-iphone', { width: 390, height: 844 })
+          await openWorkspace('live-toronto-benchmarking', 'Benchmarking', 'Energy & water benchmarking')
+          await openWorkspace('live-toronto-prospects', 'Prospects', 'Prospect workspace')
+          await openWorkspace('live-toronto-prospects-iphone', 'Prospects', 'Prospect workspace', { width: 390, height: 844 })
+          await openWorkspace('live-toronto-opportunities', 'Opportunities', 'Opportunity queues')
+          await openWorkspace('live-toronto-companies', 'Companies', 'Companies')
+          await openWorkspace('live-toronto-portfolios', 'Portfolios', 'Portfolios')
+          await openWorkspace('live-toronto-watchlist', 'Watchlist', 'Watchlist')
+          await openWorkspace('live-toronto-sources', 'Sources', 'Source health & coverage')
+
           await openToronto('live-bare-root', { width: 1440, height: 1000 }, '')
           if (!results.at(-1).url.endsWith('#/toronto')) throw new Error(`Bare root did not redirect to Toronto: ${results.at(-1).url}`)
           await openToronto('live-legacy-prospect', { width: 1440, height: 1000 }, '#/prospect')
           if (!results.at(-1).url.endsWith('#/toronto')) throw new Error(`Legacy prospect route did not redirect to Toronto: ${results.at(-1).url}`)
+
           await openToronto('live-map-view', { width: 1440, height: 1000 }, '#/toronto', async page => {
             await page.locator('.toronto-view-toggle').getByRole('button', { name: 'Map', exact: true }).click()
             await page.locator('.leaflet-container').waitFor({ timeout: 15000 })
@@ -124,7 +163,7 @@ jobs:
           const nyFailedRequests = []
           nyPage.on('response', response => { if (response.status() >= 400) nyBadResponses.push({ url: response.url(), status: response.status() }) })
           nyPage.on('requestfailed', request => nyFailedRequests.push({ url: request.url(), failure: request.failure() }))
-          const nyResponse = await nyPage.goto(`https://jeremyhennessy.github.io/TowerSignal/?ui_audit=${cacheBust}`, { waitUntil: 'networkidle', timeout: 45000 })
+          const nyResponse = await nyPage.goto(`https://jeremyhennessy.github.io/TowerSignal/?ui_audit=${Date.now()}`, { waitUntil: 'networkidle', timeout: 45000 })
           if (!nyResponse || nyResponse.status() >= 400) throw new Error(`New York app main document failed with status ${nyResponse?.status()}`)
           const nyText = (await nyPage.locator('body').innerText()).slice(0, 4000)
           if (!nyText.includes('TowerSignal')) throw new Error('New York app did not render TowerSignal content')
@@ -140,10 +179,10 @@ jobs:
           EOF
           node live-audit.mjs
 
-      - name: Upload live UI audit
+      - name: Upload live parity UI audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: toronto-preview-live-ui-audit-20260904
+          name: toronto-preview-live-parity-ui-audit-20260904
           path: app/live-ui-audit
           if-no-files-found: error
