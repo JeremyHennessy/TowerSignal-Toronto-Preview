@@ -1,0 +1,132 @@
+name: Deploy Verified Toronto Parity Artifact
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-parity-artifact.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: toronto-preview-parity-artifact
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout immutable verified Toronto parity source
+        uses: actions/checkout@v4
+        with:
+          repository: JeremyHennessy/TowerSignal
+          ref: 19b5bfb094b9e15bab6900b409dd5e8c4078384d
+          path: app
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prove committed Toronto release contracts
+        working-directory: app
+        env:
+          PYTHONPATH: .:scripts
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          market = json.loads(Path('public/data/toronto-market.json').read_text(encoding='utf-8'))
+          ewrb = json.loads(Path('public/data/toronto-ewrb-market.json').read_text(encoding='utf-8'))
+          assert market['counts']['canonical_properties'] == 13380, market['counts']
+          assert market['counts']['source_links'] == 40060, market['counts']
+          assert market['counts']['relationship_edges'] == 6344, market['counts']
+          assert market['counts']['official_source_families'] == 16, market['counts']
+          assert market['counts']['documentary_confirmed_properties'] == 47, market['counts']
+          assert market['true_market_coverage']['status'] == 'UNKNOWN_DENOMINATOR'
+          assert ewrb['scope'] == 'TORONTO_AGGREGATE_ONLY'
+          assert ewrb['toronto_reporting_rows'] == 11595
+          assert ewrb['identity_contract']['property_level_links'] == 0
+          assert ewrb['identity_contract']['tower_evidence_effect'] == 'NONE'
+          assert ewrb['identity_contract']['relationship_effect'] == 'NONE'
+          print('TORONTO_VERIFIED_PARITY_ARTIFACT_CONTRACT=PASSED')
+          PY
+          python -m unittest \
+            tests.python.test_toronto_building_permit_apply \
+            tests.python.test_toronto_building_permit_recovery \
+            tests.python.test_toronto_tobids_relationship_apply \
+            tests.python.test_toronto_tobids_legacy_provenance \
+            tests.python.test_ontario_open_building_environment \
+            tests.python.test_toronto_ewrb_market_context -v
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm install --no-audit --no-fund
+
+      - name: Verify Toronto parity frontend
+        working-directory: app
+        env:
+          VITE_ENABLE_TORONTO: "true"
+          VITE_TORONTO_PREVIEW: "true"
+        run: |
+          npm run lint
+          npm run typecheck
+          npm exec vitest run -- \
+            tests/frontend/TorontoMarket.test.tsx \
+            tests/frontend/TorontoParityShell.test.tsx \
+            tests/frontend/TorontoBenchmarkingPage.test.tsx \
+            tests/frontend/TorontoCommercialExport.test.ts
+
+      - name: Build exact committed Pages artifact
+        working-directory: app
+        env:
+          VITE_ENABLE_TORONTO: "true"
+          VITE_TORONTO_PREVIEW: "true"
+        run: npm exec vite build -- --base=/TowerSignal-Toronto-Preview/
+
+      - name: Guard isolated preview routes
+        working-directory: app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('dist/index.html')
+          html = path.read_text(encoding='utf-8')
+          guard = """<script>(function(){var h=window.location.hash||'';if(!h.startsWith('#/toronto')){window.location.replace(window.location.pathname+window.location.search+'#/toronto');}})();</script>"""
+          if guard not in html:
+              html = html.replace('<head>', '<head>'+guard, 1)
+          path.write_text(html, encoding='utf-8')
+          PY
+
+      - name: Verify New York handoff
+        run: curl -L --fail --silent --show-error --max-time 30 -o /dev/null https://jeremyhennessy.github.io/TowerSignal/
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy exact verified Toronto parity artifact
+        id: deployment
+        uses: actions/deploy-pages@v4
