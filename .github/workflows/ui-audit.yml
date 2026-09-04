@@ -94,7 +94,7 @@ jobs:
             await page.waitForTimeout(1500)
           })
           await capture('before-market-nyc', { width: 1440, height: 1000 }, async page => {
-            await page.getByLabel('Market').selectOption('nyc')
+            await page.getByLabel('Market', { exact: true }).selectOption('nyc')
             await page.waitForTimeout(1500)
           })
           fs.writeFileSync(`${out}/audit.json`, JSON.stringify(results, null, 2))
@@ -103,6 +103,7 @@ jobs:
           node audit.mjs
 
       - name: Upload UI audit
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: toronto-preview-ui-audit-before
