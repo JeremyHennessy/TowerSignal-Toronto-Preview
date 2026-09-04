@@ -1,4 +1,4 @@
-name: Toronto Preview UI Audit
+name: Toronto Preview Live UI Audit
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout Toronto navigation candidate
+      - name: Checkout test dependencies
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
@@ -36,67 +36,43 @@ jobs:
         working-directory: app
         run: npx playwright install --with-deps chromium
 
-      - name: Build Toronto preview candidate
-        working-directory: app
-        env:
-          VITE_ENABLE_TORONTO: "true"
-          VITE_TORONTO_PREVIEW: "true"
-        run: npm exec vite build -- --base=/TowerSignal-Toronto-Preview/
+      - name: Verify public endpoints
+        run: |
+          curl -L --fail --silent --show-error --max-time 30 -o /dev/null https://jeremyhennessy.github.io/TowerSignal-Toronto-Preview/
+          curl -L --fail --silent --show-error --max-time 30 -o /dev/null https://jeremyhennessy.github.io/TowerSignal/
 
-      - name: Apply preview-only route guard
+      - name: Capture live screenshots and route evidence
         working-directory: app
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path('dist/index.html')
-          html = path.read_text(encoding='utf-8')
-          guard = """<script>(function(){var h=window.location.hash||'';if(!h.startsWith('#/toronto')){window.location.replace(window.location.pathname+window.location.search+'#/toronto');}})();</script>"""
-          if guard not in html:
-              html = html.replace('<head>', '<head>'+guard, 1)
-          path.write_text(html, encoding='utf-8')
-          PY
-
-      - name: Verify New York app target
-        run: curl -L --fail --silent --show-error --max-time 30 -o /dev/null https://jeremyhennessy.github.io/TowerSignal/
-
-      - name: Capture screenshots and route evidence
-        working-directory: app
-        run: |
-          rm -rf /tmp/toronto-preview-site
-          mkdir -p /tmp/toronto-preview-site/TowerSignal-Toronto-Preview
-          cp -R dist/. /tmp/toronto-preview-site/TowerSignal-Toronto-Preview/
-          python3 -m http.server 4173 --bind 127.0.0.1 --directory /tmp/toronto-preview-site > /tmp/toronto-preview-server.log 2>&1 &
-          for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:4173/TowerSignal-Toronto-Preview/ >/dev/null; then break; fi
-            sleep 1
-          done
-          cat > audit.mjs <<'EOF'
+          cat > live-audit.mjs <<'EOF'
           import { chromium } from '@playwright/test'
           import fs from 'node:fs'
-          const out = 'ui-audit'
+          const out = 'live-ui-audit'
           fs.mkdirSync(out, { recursive: true })
           const browser = await chromium.launch()
           const results = []
-          async function record(page, name) {
-            await page.waitForTimeout(500)
+          const cacheBust = Date.now()
+          const base = `https://jeremyhennessy.github.io/TowerSignal-Toronto-Preview/?ui_audit=${cacheBust}`
+
+          async function record(page, name, badResponses, failedRequests) {
+            await page.waitForTimeout(700)
             await page.screenshot({ path: `${out}/${name}.png`, fullPage: true })
+            const dimensions = await page.evaluate(() => ({ viewportWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth }))
             results.push({
               name,
               url: page.url(),
               text: (await page.locator('body').innerText()).slice(0, 12000),
               links: await page.locator('a').evaluateAll(els => els.map(e => ({ text: e.textContent?.trim() || '', href: e.href, target: e.target }))),
               buttons: await page.locator('button').evaluateAll(els => els.map(e => e.textContent?.trim() || '').filter(Boolean)),
-              dimensions: await page.evaluate(() => ({ viewportWidth: window.innerWidth, scrollWidth: document.documentElement.scrollWidth })),
+              dimensions,
+              badResponses,
+              failedRequests,
             })
+            if (dimensions.scrollWidth > dimensions.viewportWidth) throw new Error(`${name} horizontally overflows: ${dimensions.scrollWidth}px content in ${dimensions.viewportWidth}px viewport`)
           }
-          async function openAndRecord(name, viewport, url) {
-            const page = await browser.newPage({ viewport })
-            const badResponses = []
-            const failedRequests = []
-            page.on('response', response => { if (response.status() >= 400) badResponses.push({ url: response.url(), status: response.status() }) })
-            page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }))
-            await page.goto(url, { waitUntil: 'networkidle' })
-            await page.getByRole('heading', { name: 'Toronto Market' }).waitFor({ timeout: 15000 })
+
+          async function assertTorontoHeader(page) {
+            await page.getByRole('heading', { name: 'Toronto Market' }).waitFor({ timeout: 20000 })
             const header = page.locator('header.reference-top-nav')
             const forbidden = ['Home','Prospect','Monitor','Map','NYS Market','NYS Changes','Opportunities','Companies','Portfolios','Workflow']
             for (const label of forbidden) {
@@ -108,27 +84,60 @@ jobs:
             if (await header.getByLabel('Open TowerSignal account', { exact: true }).count()) throw new Error('Unavailable account portal is still exposed')
             const nyLink = header.getByRole('link', { name: 'Open New York app', exact: true })
             if (await nyLink.getAttribute('href') !== 'https://jeremyhennessy.github.io/TowerSignal/') throw new Error('New York app link target is incorrect')
-            await record(page, name)
-            const result = results[results.length - 1]
-            result.badResponses = badResponses
-            result.failedRequests = failedRequests
-            if (result.dimensions.scrollWidth > result.dimensions.viewportWidth) throw new Error(`${name} horizontally overflows: ${result.dimensions.scrollWidth}px content in ${result.dimensions.viewportWidth}px viewport`)
+            return nyLink
+          }
+
+          async function openToronto(name, viewport, hash = '#/toronto', interaction = null) {
+            const page = await browser.newPage({ viewport, extraHTTPHeaders: { 'Cache-Control': 'no-cache' } })
+            const badResponses = []
+            const failedRequests = []
+            page.on('response', response => { if (response.status() >= 400) badResponses.push({ url: response.url(), status: response.status() }) })
+            page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }))
+            const response = await page.goto(`${base}${hash}`, { waitUntil: 'networkidle', timeout: 45000 })
+            if (!response || response.status() >= 400) throw new Error(`${name} main document did not load successfully`)
+            await assertTorontoHeader(page)
+            if (interaction) await interaction(page)
+            await record(page, name, badResponses, failedRequests)
+            const current = results[results.length - 1]
+            if (current.badResponses.length) throw new Error(`${name} produced HTTP errors: ${JSON.stringify(current.badResponses)}`)
+            if (current.failedRequests.length) throw new Error(`${name} produced failed requests: ${JSON.stringify(current.failedRequests)}`)
             await page.close()
           }
-          const base = 'http://127.0.0.1:4173/TowerSignal-Toronto-Preview/'
-          await openAndRecord('after-toronto-desktop', { width: 1440, height: 1000 }, `${base}#/toronto`)
-          await openAndRecord('after-toronto-iphone', { width: 390, height: 844 }, `${base}#/toronto`)
-          await openAndRecord('after-bare-root', { width: 1440, height: 1000 }, base)
-          await openAndRecord('after-legacy-prospect', { width: 1440, height: 1000 }, `${base}#/prospect`)
+
+          await openToronto('live-toronto-desktop', { width: 1440, height: 1000 })
+          await openToronto('live-toronto-iphone', { width: 390, height: 844 })
+          await openToronto('live-bare-root', { width: 1440, height: 1000 }, '')
+          if (!results.at(-1).url.endsWith('#/toronto')) throw new Error(`Bare root did not redirect to Toronto: ${results.at(-1).url}`)
+          await openToronto('live-legacy-prospect', { width: 1440, height: 1000 }, '#/prospect')
+          if (!results.at(-1).url.endsWith('#/toronto')) throw new Error(`Legacy prospect route did not redirect to Toronto: ${results.at(-1).url}`)
+          await openToronto('live-map-view', { width: 1440, height: 1000 }, '#/toronto', async page => {
+            await page.locator('.toronto-view-toggle').getByRole('button', { name: 'Map', exact: true }).click()
+            await page.locator('.leaflet-container').waitFor({ timeout: 15000 })
+          })
+          await openToronto('live-property-detail', { width: 1440, height: 1000 }, '#/toronto', async page => {
+            await page.locator('.toronto-table tbody tr').first().click()
+            await page.locator('.toronto-detail').waitFor({ timeout: 15000 })
+          })
+
+          const nyPage = await browser.newPage({ viewport: { width: 1440, height: 1000 }, extraHTTPHeaders: { 'Cache-Control': 'no-cache' } })
+          const nyResponse = await nyPage.goto(`https://jeremyhennessy.github.io/TowerSignal/?ui_audit=${cacheBust}`, { waitUntil: 'domcontentloaded', timeout: 45000 })
+          if (!nyResponse || nyResponse.status() >= 400) throw new Error(`New York app main document failed with status ${nyResponse?.status()}`)
+          await nyPage.waitForTimeout(2500)
+          const nyText = (await nyPage.locator('body').innerText()).slice(0, 4000)
+          if (!nyText.includes('TowerSignal')) throw new Error('New York app did not render TowerSignal content')
+          await nyPage.screenshot({ path: `${out}/live-new-york-destination.png`, fullPage: true })
+          results.push({ name: 'live-new-york-destination', url: nyPage.url(), mainStatus: nyResponse.status(), text: nyText })
+          await nyPage.close()
+
           fs.writeFileSync(`${out}/audit.json`, JSON.stringify(results, null, 2))
           await browser.close()
           EOF
-          node audit.mjs
+          node live-audit.mjs
 
-      - name: Upload UI audit
+      - name: Upload live UI audit
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: toronto-preview-ui-audit-after
-          path: app/ui-audit
+          name: toronto-preview-live-ui-audit-20260904
+          path: app/live-ui-audit
           if-no-files-found: error
