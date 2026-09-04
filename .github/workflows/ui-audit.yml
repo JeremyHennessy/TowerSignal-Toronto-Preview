@@ -16,11 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout exact deployed Toronto source
+      - name: Checkout Toronto navigation candidate
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
-          ref: a535195e32eb2be7397eafd709ec0eba013e6890
+          ref: 01b70d072088aac88aeff209e7cbd5214e11b951
           path: app
 
       - name: Set up Node.js 22
@@ -36,12 +36,28 @@ jobs:
         working-directory: app
         run: npx playwright install --with-deps chromium
 
-      - name: Build exact Toronto preview
+      - name: Build Toronto preview candidate
         working-directory: app
         env:
           VITE_ENABLE_TORONTO: "true"
           VITE_TORONTO_PREVIEW: "true"
         run: npm exec vite build -- --base=/TowerSignal-Toronto-Preview/
+
+      - name: Apply preview-only route guard
+        working-directory: app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('dist/index.html')
+          html = path.read_text(encoding='utf-8')
+          guard = """<script>(function(){var h=window.location.hash||'';if(!h.startsWith('#/toronto')){window.location.replace(window.location.pathname+window.location.search+'#/toronto');}})();</script>"""
+          if guard not in html:
+              html = html.replace('<head>', '<head>'+guard, 1)
+          path.write_text(html, encoding='utf-8')
+          PY
+
+      - name: Verify New York app target
+        run: curl -L --fail --silent --show-error --max-time 30 -o /dev/null https://jeremyhennessy.github.io/TowerSignal/
 
       - name: Capture screenshots and route evidence
         working-directory: app
@@ -61,16 +77,8 @@ jobs:
           fs.mkdirSync(out, { recursive: true })
           const browser = await chromium.launch()
           const results = []
-          async function capture(name, viewport, action) {
-            const page = await browser.newPage({ viewport })
-            const badResponses = []
-            const failedRequests = []
-            page.on('response', response => { if (response.status() >= 400) badResponses.push({ url: response.url(), status: response.status() }) })
-            page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }))
-            await page.goto('http://127.0.0.1:4173/TowerSignal-Toronto-Preview/#/toronto', { waitUntil: 'networkidle' })
-            await page.getByRole('heading', { name: 'Toronto Market' }).waitFor({ timeout: 15000 })
-            if (action) await action(page)
-            await page.waitForTimeout(1000)
+          async function record(page, name) {
+            await page.waitForTimeout(500)
             await page.screenshot({ path: `${out}/${name}.png`, fullPage: true })
             results.push({
               name,
@@ -78,25 +86,36 @@ jobs:
               text: (await page.locator('body').innerText()).slice(0, 12000),
               links: await page.locator('a').evaluateAll(els => els.map(e => ({ text: e.textContent?.trim() || '', href: e.href, target: e.target }))),
               buttons: await page.locator('button').evaluateAll(els => els.map(e => e.textContent?.trim() || '').filter(Boolean)),
-              badResponses,
-              failedRequests,
             })
+          }
+          async function openAndRecord(name, viewport, url) {
+            const page = await browser.newPage({ viewport })
+            const badResponses = []
+            const failedRequests = []
+            page.on('response', response => { if (response.status() >= 400) badResponses.push({ url: response.url(), status: response.status() }) })
+            page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }))
+            await page.goto(url, { waitUntil: 'networkidle' })
+            await page.getByRole('heading', { name: 'Toronto Market' }).waitFor({ timeout: 15000 })
+            const forbidden = ['Home','Prospect','Monitor','Map','NYS Market','NYS Changes','Opportunities','Companies','Portfolios','Workflow']
+            for (const label of forbidden) {
+              if (await page.getByRole('button', { name: label, exact: true }).count()) throw new Error(`Unavailable preview navigation is still exposed: ${label}`)
+            }
+            if (await page.getByLabel('Market', { exact: true }).count()) throw new Error('Unavailable market selector is still exposed')
+            if (await page.getByLabel('Search accounts or locations', { exact: true }).count()) throw new Error('NYC global search is still exposed')
+            if (await page.getByLabel('Source Health & Coverage', { exact: true }).count()) throw new Error('NYC source health is still exposed')
+            if (await page.getByLabel('Open TowerSignal account', { exact: true }).count()) throw new Error('Unavailable account portal is still exposed')
+            const nyLink = page.getByRole('link', { name: 'New York app ↗', exact: true })
+            if (await nyLink.getAttribute('href') !== 'https://jeremyhennessy.github.io/TowerSignal/') throw new Error('New York app link target is incorrect')
+            await record(page, name)
+            results[results.length - 1].badResponses = badResponses
+            results[results.length - 1].failedRequests = failedRequests
             await page.close()
           }
-          await capture('before-toronto-desktop', { width: 1440, height: 1000 })
-          await capture('before-toronto-iphone', { width: 390, height: 844 })
-          await capture('before-prospect-click', { width: 1440, height: 1000 }, async page => {
-            await page.getByRole('button', { name: 'Prospect', exact: true }).click()
-            await page.waitForTimeout(1500)
-          })
-          await capture('before-home-click', { width: 1440, height: 1000 }, async page => {
-            await page.getByRole('button', { name: 'Home', exact: true }).click()
-            await page.waitForTimeout(1500)
-          })
-          await capture('before-market-nyc', { width: 1440, height: 1000 }, async page => {
-            await page.getByLabel('Market', { exact: true }).selectOption('nyc')
-            await page.waitForTimeout(1500)
-          })
+          const base = 'http://127.0.0.1:4173/TowerSignal-Toronto-Preview/'
+          await openAndRecord('after-toronto-desktop', { width: 1440, height: 1000 }, `${base}#/toronto`)
+          await openAndRecord('after-toronto-iphone', { width: 390, height: 844 }, `${base}#/toronto`)
+          await openAndRecord('after-bare-root', { width: 1440, height: 1000 }, base)
+          await openAndRecord('after-legacy-prospect', { width: 1440, height: 1000 }, `${base}#/prospect`)
           fs.writeFileSync(`${out}/audit.json`, JSON.stringify(results, null, 2))
           await browser.close()
           EOF
@@ -106,6 +125,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: toronto-preview-ui-audit-before
+          name: toronto-preview-ui-audit-after
           path: app/ui-audit
           if-no-files-found: error
