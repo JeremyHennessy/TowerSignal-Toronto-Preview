@@ -1,0 +1,92 @@
+name: Toronto Preview Auth Isolation Candidate
+
+on:
+  push:
+    branches:
+      - agent/ui-link-audit-20260904
+    paths:
+      - ".github/workflows/auth-isolation-candidate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout complete Toronto UI candidate
+        uses: actions/checkout@v4
+        with:
+          repository: JeremyHennessy/TowerSignal
+          ref: 2eea1e2d5cbf0d9cf24d2325eb3a4222806ba6ea
+          path: app
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm install --no-audit --no-fund
+
+      - name: Install Chromium
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+
+      - name: Build and prove preview auth isolation
+        working-directory: app
+        env:
+          VITE_ENABLE_TORONTO: "true"
+          VITE_TORONTO_PREVIEW: "true"
+        run: |
+          npm exec vite build -- --base=/TowerSignal-Toronto-Preview/
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('dist/index.html')
+          html = path.read_text(encoding='utf-8')
+          guard = """<script>(function(){var h=window.location.hash||'';if(!h.startsWith('#/toronto')){window.location.replace(window.location.pathname+window.location.search+'#/toronto');}})();</script>"""
+          if guard not in html:
+              html = html.replace('<head>', '<head>'+guard, 1)
+          path.write_text(html, encoding='utf-8')
+          PY
+          rm -rf /tmp/toronto-preview-site
+          mkdir -p /tmp/toronto-preview-site/TowerSignal-Toronto-Preview
+          cp -R dist/. /tmp/toronto-preview-site/TowerSignal-Toronto-Preview/
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory /tmp/toronto-preview-site >/tmp/toronto-preview-server.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:4173/TowerSignal-Toronto-Preview/ >/dev/null; then break; fi
+            sleep 1
+          done
+          cat > auth-audit.mjs <<'EOF'
+          import { chromium } from '@playwright/test'
+          import fs from 'node:fs'
+          const browser = await chromium.launch()
+          const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } })
+          const requests = []
+          const failedRequests = []
+          const badResponses = []
+          page.on('request', request => requests.push(request.url()))
+          page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }))
+          page.on('response', response => { if (response.status() >= 400) badResponses.push({ url: response.url(), status: response.status() }) })
+          await page.goto('http://127.0.0.1:4173/TowerSignal-Toronto-Preview/#/toronto', { waitUntil: 'networkidle' })
+          await page.getByRole('heading', { name: 'Toronto Market' }).waitFor({ timeout: 15000 })
+          const neonRequests = requests.filter(url => url.includes('neonauth') || url.includes('/auth/get-session'))
+          if (neonRequests.length) throw new Error(`Toronto preview emitted auth requests: ${JSON.stringify(neonRequests)}`)
+          if (failedRequests.length) throw new Error(`Toronto preview emitted failed requests: ${JSON.stringify(failedRequests)}`)
+          if (badResponses.length) throw new Error(`Toronto preview emitted HTTP errors: ${JSON.stringify(badResponses)}`)
+          fs.mkdirSync('auth-isolation-audit', { recursive: true })
+          await page.screenshot({ path: 'auth-isolation-audit/desktop.png', fullPage: true })
+          fs.writeFileSync('auth-isolation-audit/network.json', JSON.stringify({ neonRequests, failedRequests, badResponses, requestCount: requests.length }, null, 2))
+          await browser.close()
+          EOF
+          node auth-audit.mjs
+
+      - name: Upload auth isolation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: toronto-preview-auth-isolation-candidate
+          path: app/auth-isolation-audit
+          if-no-files-found: warn
