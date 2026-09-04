@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
-          ref: 1f54b265e279dd4c1240033768282d7cf7f14e72
+          ref: 296393457b759b3e0437505d127bd0902c245244
           path: app
 
       - name: Set up Node.js 22
@@ -109,8 +109,10 @@ jobs:
             const nyLink = header.getByRole('link', { name: 'Open New York app', exact: true })
             if (await nyLink.getAttribute('href') !== 'https://jeremyhennessy.github.io/TowerSignal/') throw new Error('New York app link target is incorrect')
             await record(page, name)
-            results[results.length - 1].badResponses = badResponses
-            results[results.length - 1].failedRequests = failedRequests
+            const result = results[results.length - 1]
+            result.badResponses = badResponses
+            result.failedRequests = failedRequests
+            if (result.dimensions.scrollWidth > result.dimensions.viewportWidth) throw new Error(`${name} horizontally overflows: ${result.dimensions.scrollWidth}px content in ${result.dimensions.viewportWidth}px viewport`)
             await page.close()
           }
           const base = 'http://127.0.0.1:4173/TowerSignal-Toronto-Preview/'
