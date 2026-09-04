@@ -45,16 +45,16 @@ jobs:
 
       - name: Capture screenshots and route evidence
         working-directory: app
-        env:
-          VITE_ENABLE_TORONTO: "true"
-          VITE_TORONTO_PREVIEW: "true"
         run: |
-          npm exec vite preview -- --host 127.0.0.1 --port 4173 > /tmp/vite-preview.log 2>&1 &
+          rm -rf /tmp/toronto-preview-site
+          mkdir -p /tmp/toronto-preview-site/TowerSignal-Toronto-Preview
+          cp -R dist/. /tmp/toronto-preview-site/TowerSignal-Toronto-Preview/
+          python3 -m http.server 4173 --bind 127.0.0.1 --directory /tmp/toronto-preview-site > /tmp/toronto-preview-server.log 2>&1 &
           for i in {1..30}; do
             if curl -fsS http://127.0.0.1:4173/TowerSignal-Toronto-Preview/ >/dev/null; then break; fi
             sleep 1
           done
-          cat > /tmp/audit.mjs <<'EOF'
+          cat > audit.mjs <<'EOF'
           import { chromium } from '@playwright/test'
           import fs from 'node:fs'
           const out = 'ui-audit'
@@ -62,7 +62,7 @@ jobs:
           const browser = await chromium.launch()
           const results = []
           async function capture(name, viewport, action) {
-            const page = await browser.newPage({ viewportSize: viewport })
+            const page = await browser.newPage({ viewport })
             const badResponses = []
             const failedRequests = []
             page.on('response', response => { if (response.status() >= 400) badResponses.push({ url: response.url(), status: response.status() }) })
@@ -100,7 +100,7 @@ jobs:
           fs.writeFileSync(`${out}/audit.json`, JSON.stringify(results, null, 2))
           await browser.close()
           EOF
-          node /tmp/audit.mjs
+          node audit.mjs
 
       - name: Upload UI audit
         uses: actions/upload-artifact@v4
