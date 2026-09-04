@@ -1,0 +1,110 @@
+name: Toronto Preview UI Audit
+
+on:
+  push:
+    branches:
+      - agent/ui-link-audit-20260904
+    paths:
+      - ".github/workflows/ui-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact deployed Toronto source
+        uses: actions/checkout@v4
+        with:
+          repository: JeremyHennessy/TowerSignal
+          ref: a535195e32eb2be7397eafd709ec0eba013e6890
+          path: app
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install dependencies
+        working-directory: app
+        run: npm install --no-audit --no-fund
+
+      - name: Install Chromium
+        working-directory: app
+        run: npx playwright install --with-deps chromium
+
+      - name: Build exact Toronto preview
+        working-directory: app
+        env:
+          VITE_ENABLE_TORONTO: "true"
+          VITE_TORONTO_PREVIEW: "true"
+        run: npm exec vite build -- --base=/TowerSignal-Toronto-Preview/
+
+      - name: Capture screenshots and route evidence
+        working-directory: app
+        env:
+          VITE_ENABLE_TORONTO: "true"
+          VITE_TORONTO_PREVIEW: "true"
+        run: |
+          npm exec vite preview -- --host 127.0.0.1 --port 4173 > /tmp/vite-preview.log 2>&1 &
+          for i in {1..30}; do
+            if curl -fsS http://127.0.0.1:4173/TowerSignal-Toronto-Preview/ >/dev/null; then break; fi
+            sleep 1
+          done
+          cat > /tmp/audit.mjs <<'EOF'
+          import { chromium } from '@playwright/test'
+          import fs from 'node:fs'
+          const out = 'ui-audit'
+          fs.mkdirSync(out, { recursive: true })
+          const browser = await chromium.launch()
+          const results = []
+          async function capture(name, viewport, action) {
+            const page = await browser.newPage({ viewportSize: viewport })
+            const badResponses = []
+            const failedRequests = []
+            page.on('response', response => { if (response.status() >= 400) badResponses.push({ url: response.url(), status: response.status() }) })
+            page.on('requestfailed', request => failedRequests.push({ url: request.url(), failure: request.failure() }))
+            await page.goto('http://127.0.0.1:4173/TowerSignal-Toronto-Preview/#/toronto', { waitUntil: 'networkidle' })
+            await page.getByRole('heading', { name: 'Toronto Market' }).waitFor({ timeout: 15000 })
+            if (action) await action(page)
+            await page.waitForTimeout(1000)
+            await page.screenshot({ path: `${out}/${name}.png`, fullPage: true })
+            results.push({
+              name,
+              url: page.url(),
+              text: (await page.locator('body').innerText()).slice(0, 12000),
+              links: await page.locator('a').evaluateAll(els => els.map(e => ({ text: e.textContent?.trim() || '', href: e.href, target: e.target }))),
+              buttons: await page.locator('button').evaluateAll(els => els.map(e => e.textContent?.trim() || '').filter(Boolean)),
+              badResponses,
+              failedRequests,
+            })
+            await page.close()
+          }
+          await capture('before-toronto-desktop', { width: 1440, height: 1000 })
+          await capture('before-toronto-iphone', { width: 390, height: 844 })
+          await capture('before-prospect-click', { width: 1440, height: 1000 }, async page => {
+            await page.getByRole('button', { name: 'Prospect', exact: true }).click()
+            await page.waitForTimeout(1500)
+          })
+          await capture('before-home-click', { width: 1440, height: 1000 }, async page => {
+            await page.getByRole('button', { name: 'Home', exact: true }).click()
+            await page.waitForTimeout(1500)
+          })
+          await capture('before-market-nyc', { width: 1440, height: 1000 }, async page => {
+            await page.getByLabel('Market').selectOption('nyc')
+            await page.waitForTimeout(1500)
+          })
+          fs.writeFileSync(`${out}/audit.json`, JSON.stringify(results, null, 2))
+          await browser.close()
+          EOF
+          node /tmp/audit.mjs
+
+      - name: Upload UI audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: toronto-preview-ui-audit-before
+          path: app/ui-audit
+          if-no-files-found: error
