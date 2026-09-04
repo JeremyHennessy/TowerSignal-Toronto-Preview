@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
-          ref: 2eea1e2d5cbf0d9cf24d2325eb3a4222806ba6ea
+          ref: 19b5bfb094b9e15bab6900b409dd5e8c4078384d
           path: app
 
       - name: Set up Python 3.12
@@ -42,17 +42,45 @@ jobs:
         working-directory: app
         run: npm install --no-audit --no-fund
 
-      - name: Run identity and ChemTRAC regressions
+      - name: Run identity, ChemTRAC, permit, TOBids and EWRB regressions
         working-directory: app
+        env:
+          PYTHONPATH: .:scripts
         run: |
           python -m unittest \
             tests.python.test_toronto_source_identity_regression \
             tests.python.test_toronto_identity_exceptions \
-            tests.python.test_toronto_chemtrac_regression -v
+            tests.python.test_toronto_chemtrac_regression \
+            tests.python.test_toronto_building_permit_apply \
+            tests.python.test_toronto_building_permit_recovery \
+            tests.python.test_toronto_tobids_relationship_apply \
+            tests.python.test_toronto_tobids_legacy_provenance \
+            tests.python.test_ontario_open_building_environment \
+            tests.python.test_toronto_ewrb_market_context -v
 
       - name: Build normalized Toronto app payload
         working-directory: app
         run: python scripts/build_toronto_app_data.py
+
+      - name: Verify aggregate-only EWRB market context
+        working-directory: app
+        env:
+          PYTHONPATH: .:scripts
+        run: |
+          python scripts/build_toronto_ewrb_market_context.py
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path('public/data/toronto-ewrb-market.json').read_text(encoding='utf-8'))
+          assert payload['scope'] == 'TORONTO_AGGREGATE_ONLY'
+          assert payload['toronto_reporting_rows'] == 11595
+          assert payload['reporting_years'] == [2018, 2019, 2020, 2021, 2022, 2023, 2024]
+          assert payload['identity_contract']['property_level_links'] == 0
+          assert payload['identity_contract']['tower_evidence_effect'] == 'NONE'
+          assert payload['identity_contract']['relationship_effect'] == 'NONE'
+          assert 'properties' not in payload and 'rows' not in payload
+          print('TORONTO_EWRB_AGGREGATE_RELEASE_CONTRACT=PASSED')
+          PY
 
       - name: Validate source actions in strict mode
         working-directory: app
@@ -76,7 +104,7 @@ jobs:
           python scripts/validate_toronto_market.py
           python scripts/toronto_final_validate.py
 
-      - name: Verify Toronto frontend
+      - name: Verify Toronto frontend parity workspaces
         working-directory: app
         env:
           VITE_ENABLE_TORONTO: "true"
@@ -84,7 +112,11 @@ jobs:
         run: |
           npm run lint
           npm run typecheck
-          npm exec vitest run -- tests/frontend/TorontoMarket.test.tsx
+          npm exec vitest run -- \
+            tests/frontend/TorontoMarket.test.tsx \
+            tests/frontend/TorontoParityShell.test.tsx \
+            tests/frontend/TorontoBenchmarkingPage.test.tsx \
+            tests/frontend/TorontoCommercialExport.test.ts
 
       - name: Build isolated Pages artifact
         working-directory: app
