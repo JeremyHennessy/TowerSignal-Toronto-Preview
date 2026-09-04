@@ -1,0 +1,103 @@
+name: Deploy Toronto Preview UI Hotfix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/deploy-ui-hotfix.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: toronto-preview-ui-hotfix
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact UI hotfix source
+        uses: actions/checkout@v4
+        with:
+          repository: JeremyHennessy/TowerSignal
+          ref: 296393457b759b3e0437505d127bd0902c245244
+          path: app
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Prove Toronto payload is unchanged
+        working-directory: app
+        run: |
+          test "$(git hash-object public/data/toronto-market.json)" = "50d6a69eea62550bad0066ae879bb799b06fd0c9"
+          echo "ca27946af79c6624a7dd0fa893f0877b267352671d3468c7aad29fb8e1030a03  public/data/toronto-market.json" | sha256sum --check --strict
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm install --no-audit --no-fund
+
+      - name: Verify Toronto frontend
+        working-directory: app
+        env:
+          VITE_ENABLE_TORONTO: "true"
+          VITE_TORONTO_PREVIEW: "true"
+        run: |
+          npm run lint
+          npm run typecheck
+          npm exec vitest run -- tests/frontend/TorontoMarket.test.tsx
+
+      - name: Build isolated Pages artifact
+        working-directory: app
+        env:
+          VITE_ENABLE_TORONTO: "true"
+          VITE_TORONTO_PREVIEW: "true"
+        run: npm exec vite build -- --base=/TowerSignal-Toronto-Preview/
+
+      - name: Prove built Toronto payload is unchanged
+        working-directory: app
+        run: |
+          test "$(git hash-object dist/data/toronto-market.json)" = "50d6a69eea62550bad0066ae879bb799b06fd0c9"
+          echo "ca27946af79c6624a7dd0fa893f0877b267352671d3468c7aad29fb8e1030a03  dist/data/toronto-market.json" | sha256sum --check --strict
+
+      - name: Guard isolated preview routes
+        working-directory: app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('dist/index.html')
+          html = path.read_text(encoding='utf-8')
+          guard = """<script>(function(){var h=window.location.hash||'';if(!h.startsWith('#/toronto')){window.location.replace(window.location.pathname+window.location.search+'#/toronto');}})();</script>"""
+          if guard not in html:
+              html = html.replace('<head>', '<head>'+guard, 1)
+          path.write_text(html, encoding='utf-8')
+          PY
+
+      - name: Verify New York app target
+        run: curl -L --fail --silent --show-error --max-time 30 -o /dev/null https://jeremyhennessy.github.io/TowerSignal/
+
+      - name: Configure GitHub Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: app/dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
