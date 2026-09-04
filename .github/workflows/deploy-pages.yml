@@ -25,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: JeremyHennessy/TowerSignal
-          ref: 785b5bdac104fb02220e7fa28c987707438320e1
+          ref: 2eea1e2d5cbf0d9cf24d2325eb3a4222806ba6ea
           path: app
 
       - name: Set up Python 3.12
